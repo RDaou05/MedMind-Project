@@ -1,41 +1,96 @@
 import React, { useState, useEffect } from 'react';
-import { StatusBar } from 'expo-status-bar';
 import { NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
+import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+import { StatusBar } from 'expo-status-bar';
+import { Ionicons } from '@expo/vector-icons';
 import { onAuthStateChanged } from 'firebase/auth';
 import { auth } from './firebase';
+
+// Screens
 import LoginScreen from './screens/LoginScreen';
-import MedManage from './screens/med-manage';
+import HomeScreen from './screens/HomeScreen';
+import MedicationsScreen from './screens/MedicationsScreen';
+import AddMedicationScreen from './screens/AddMedicationScreen';
+import CalendarScreen from './screens/CalendarScreen';
+import ProfileScreen from './screens/ProfileScreen';
+import OnboardingScreen from './screens/OnboardingScreen';
 
 const Stack = createStackNavigator();
+const Tab = createBottomTabNavigator();
+
+function MainTabs() {
+  return (
+    <Tab.Navigator
+      screenOptions={({ route }) => ({
+        tabBarIcon: ({ focused, color, size }) => {
+          let iconName;
+          if (route.name === 'Home') {
+            iconName = focused ? 'home' : 'home-outline';
+          } else if (route.name === 'Medications') {
+            iconName = focused ? 'medical' : 'medical-outline';
+          } else if (route.name === 'Calendar') {
+            iconName = focused ? 'calendar' : 'calendar-outline';
+          } else if (route.name === 'Profile') {
+            iconName = focused ? 'person' : 'person-outline';
+          }
+          return <Ionicons name={iconName} size={size} color={color} />;
+        },
+        tabBarActiveTintColor: '#3fa58e',
+        tabBarInactiveTintColor: 'gray',
+        headerShown: false,
+        tabBarStyle: {
+          backgroundColor: '#fff',
+          borderTopWidth: 1,
+          borderTopColor: '#e0e0e0',
+          paddingBottom: 5,
+          height: 60,
+        },
+      })}
+    >
+      <Tab.Screen name="Home" component={HomeScreen} />
+      <Tab.Screen name="Medications" component={MedicationsScreen} />
+      <Tab.Screen name="Calendar" component={CalendarScreen} />
+      <Tab.Screen name="Profile" component={ProfileScreen} />
+    </Tab.Navigator>
+  );
+}
 
 export default function App() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [isFirstTime, setIsFirstTime] = useState(false);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       setUser(user);
       setLoading(false);
     });
-
     return unsubscribe;
   }, []);
 
   if (loading) {
-    return null; // You can add a loading screen here
+    return null;
   }
 
   return (
     <NavigationContainer>
-      <Stack.Navigator 
-        initialRouteName={user ? "med-manage" : "login"} 
-        screenOptions={{headerShown: false}}
-      >
-        <Stack.Screen name="login" component={LoginScreen}/>
-        <Stack.Screen name="med-manage" component={MedManage}/>
-      </Stack.Navigator>
       <StatusBar style="auto" />
+      <Stack.Navigator screenOptions={{ headerShown: false }}>
+        {!user ? (
+          <>
+            <Stack.Screen name="Login" component={LoginScreen} />
+          </>
+        ) : (
+          <>
+            {isFirstTime && (
+              <Stack.Screen name="Onboarding" component={OnboardingScreen} />
+            )}
+            <Stack.Screen name="MainTabs" component={MainTabs} />
+            <Stack.Screen name="AddMedication" component={AddMedicationScreen} />
+          </>
+        )}
+      </Stack.Navigator>
     </NavigationContainer>
   );
 }
