@@ -1,70 +1,44 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
   ScrollView,
   StyleSheet,
   TouchableOpacity,
-  SafeAreaView,
   TextInput,
   Alert,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { auth, subscribeToUserMedications, deleteMedication, updateMedication } from '../firebase';
 
 export default function MedicationsScreen({ navigation }) {
   const [searchQuery, setSearchQuery] = useState('');
-  const [medications, setMedications] = useState([
-    {
-      id: 1,
-      name: 'Aspirin',
-      dosage: '81mg',
-      frequency: 'Once daily',
-      times: ['08:00'],
-      type: 'pill',
-      color: '#FF6B6B',
-      inventory: 28,
-      refillThreshold: 7,
-    },
-    {
-      id: 2,
-      name: 'Vitamin D',
-      dosage: '1000 IU',
-      frequency: 'Once daily',
-      times: ['12:00'],
-      type: 'capsule',
-      color: '#4ECDC4',
-      inventory: 15,
-      refillThreshold: 10,
-    },
-    {
-      id: 3,
-      name: 'Metformin',
-      dosage: '500mg',
-      frequency: 'Twice daily',
-      times: ['08:00', '18:00'],
-      type: 'pill',
-      color: '#45B7D1',
-      inventory: 45,
-      refillThreshold: 14,
-    },
-    {
-      id: 4,
-      name: 'Lisinopril',
-      dosage: '10mg',
-      frequency: 'Once daily',
-      times: ['20:00'],
-      type: 'pill',
-      color: '#96CEB4',
-      inventory: 5,
-      refillThreshold: 7,
-    },
-  ]);
+  const [medications, setMedications] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const user = auth.currentUser;
+    if (!user) {
+      setLoading(false);
+      return;
+    }
+
+    // Subscribe to real-time medication updates
+    const unsubscribe = subscribeToUserMedications(user.uid, (medications) => {
+      setMedications(medications);
+      setLoading(false);
+    });
+
+    // Cleanup subscription on unmount
+    return () => unsubscribe();
+  }, []);
 
   const filteredMedications = medications.filter(med =>
     med.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const deleteMedication = (id) => {
+  const handleDeleteMedication = (id) => {
     Alert.alert(
       'Delete Medication',
       'Are you sure you want to delete this medication?',
@@ -73,12 +47,29 @@ export default function MedicationsScreen({ navigation }) {
         {
           text: 'Delete',
           style: 'destructive',
-          onPress: () => {
-            setMedications(prev => prev.filter(med => med.id !== id));
+          onPress: async () => {
+            try {
+              await deleteMedication(id);
+              setMedications(prev => prev.filter(med => med.id !== id));
+              Alert.alert('Success', 'Medication deleted successfully');
+            } catch (error) {
+              Alert.alert('Error', 'Failed to delete medication');
+            }
           },
         },
       ]
     );
+  };
+
+  const handleRefill = async (medication) => {
+    try {
+      await updateMedication(medication.id, {
+        currentServings: medication.servingsPerContainer || 0
+      });
+      Alert.alert('Success', 'Medication refilled successfully!');
+    } catch (error) {
+      Alert.alert('Error', 'Failed to refill medication');
+    }
   };
 
   const getMedicationIcon = (type) => {
@@ -96,7 +87,7 @@ export default function MedicationsScreen({ navigation }) {
     }
   };
 
-  const needsRefill = (inventory, threshold) => inventory <= threshold;
+  const needsRefill = (currentServings, threshold) => currentServings <= threshold;
 
   return (
     <SafeAreaView style={styles.container}>
@@ -142,9 +133,12 @@ export default function MedicationsScreen({ navigation }) {
           </View>
         ) : (
           filteredMedications.map((medication) => (
-            <View key={medication.id} style={styles.medicationCard}>
+            <View key={medication.id} style={[
+              styles.medicationCard,
+              needsRefill(medication.currentServings, medication.servingThreshold) && styles.lowInventoryCard
+            ]}>
               {/* Refill Alert */}
-              {needsRefill(medication.inventory, medication.refillThreshold) && (
+              {needsRefill(medication.currentServings, medication.servingThreshold) && (
                 <View style={styles.refillAlert}>
                   <Ionicons name="warning" size={16} color="#FF6B6B" />
                   <Text style={styles.refillAlertText}>Refill needed</Text>
@@ -172,15 +166,14 @@ export default function MedicationsScreen({ navigation }) {
                   <TouchableOpacity
                     style={styles.actionButton}
                     onPress={() => {
-                      // Navigate to edit screen
-                      Alert.alert('Edit', 'Edit medication functionality');
+                      navigation.navigate('AddMedication', { editMedication: medication });
                     }}
                   >
                     <Ionicons name="create-outline" size={20} color="#666" />
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={styles.actionButton}
-                    onPress={() => deleteMedication(medication.id)}
+                    onPress={() => handleDeleteMedication(medication.id)}
                   >
                     <Ionicons name="trash-outline" size={20} color="#FF6B6B" />
                   </TouchableOpacity>
@@ -202,15 +195,21 @@ export default function MedicationsScreen({ navigation }) {
               {/* Inventory */}
               <View style={styles.inventoryContainer}>
                 <View style={styles.inventoryInfo}>
-                  <Text style={styles.inventoryLabel}>Inventory:</Text>
+                  <Text style={styles.inventoryLabel}>Servings:</Text>
                   <Text style={[
                     styles.inventoryCount,
-                    needsRefill(medication.inventory, medication.refillThreshold) && styles.lowInventory
+                    needsRefill(medication.currentServings, medication.servingThreshold) && styles.lowInventory
                   ]}>
-                    {medication.inventory} pills remaining
+                    {medication.currentServings || 0} servings remaining
+                  </Text>
+                  <Text style={styles.servingSize}>
+                    {medication.servingSize || 1} per dose
                   </Text>
                 </View>
-                <TouchableOpacity style={styles.refillButton}>
+                <TouchableOpacity 
+                  style={styles.refillButton}
+                  onPress={() => handleRefill(medication)}
+                >
                   <Text style={styles.refillButtonText}>Mark Refilled</Text>
                 </TouchableOpacity>
               </View>
@@ -291,6 +290,10 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.1,
     shadowRadius: 4,
     elevation: 3,
+  },
+  lowInventoryCard: {
+    borderWidth: 2,
+    borderColor: '#FF6B6B',
   },
   refillAlert: {
     flexDirection: 'row',
@@ -396,6 +399,11 @@ const styles = StyleSheet.create({
   lowInventory: {
     color: '#FF6B6B',
     fontWeight: '600',
+  },
+  servingSize: {
+    fontSize: 12,
+    color: '#999',
+    marginTop: 2,
   },
   refillButton: {
     backgroundColor: '#f0f9f7',

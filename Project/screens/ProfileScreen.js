@@ -1,24 +1,82 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
   ScrollView,
   StyleSheet,
   TouchableOpacity,
-  SafeAreaView,
   Switch,
   Alert,
+  TextInput,
+  Modal,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { signOut } from 'firebase/auth';
-import { auth } from '../firebase';
+import { auth, getUserProfile, updateUserProfile } from '../firebase';
+import { useTheme } from '../contexts/ThemeContext';
 
 export default function ProfileScreen() {
-  const [notificationsEnabled, setNotificationsEnabled] = useState(true);
-  const [soundEnabled, setSoundEnabled] = useState(true);
-  const [vibrationEnabled, setVibrationEnabled] = useState(true);
-  const [darkMode, setDarkMode] = useState(false);
+  const { isDarkMode, setIsDarkMode, colors } = useTheme();
+  const [userProfile, setUserProfile] = useState(null);
   const [biometricEnabled, setBiometricEnabled] = useState(false);
+  const [showEditName, setShowEditName] = useState(false);
+  const [newName, setNewName] = useState('');
+
+  useEffect(() => {
+    loadUserProfile();
+  }, []);
+
+  const loadUserProfile = async () => {
+    try {
+      const user = auth.currentUser;
+      if (user) {
+        console.log('Loading profile for user:', user.uid);
+        try {
+          const profile = await getUserProfile(user.uid);
+          if (profile) {
+            setUserProfile(profile);
+            setNewName(profile.fullName || '');
+            
+            // Load user preferences
+            if (profile.preferences) {
+              setIsDarkMode(profile.preferences.darkMode ?? false);
+            }
+          } else {
+            console.log('No profile document found');
+            // Set default profile
+            setUserProfile({ fullName: 'User', email: user.email });
+            setNewName('User');
+          }
+        } catch (profileError) {
+          console.log('Error loading profile, setting defaults:', profileError.message);
+          setUserProfile({ fullName: 'User', email: user.email });
+          setNewName('User');
+        }
+      }
+    } catch (error) {
+      console.error('Error in loadUserProfile:', error);
+    }
+  };
+
+  const handleUpdateName = async () => {
+    if (!newName.trim()) {
+      Alert.alert('Error', 'Please enter a valid name');
+      return;
+    }
+    
+    try {
+      const user = auth.currentUser;
+      if (user) {
+        await updateUserProfile(user.uid, { fullName: newName.trim() });
+        setUserProfile(prev => ({ ...prev, fullName: newName.trim() }));
+        setShowEditName(false);
+        Alert.alert('Success', 'Name updated successfully');
+      }
+    } catch (error) {
+      Alert.alert('Error', 'Failed to update name');
+    }
+  };
 
   const handleLogout = () => {
     Alert.alert(
@@ -41,9 +99,7 @@ export default function ProfileScreen() {
     );
   };
 
-  const handleExportData = () => {
-    Alert.alert('Export Data', 'Your medication data will be exported as a PDF file.');
-  };
+
 
   const handleDeleteAccount = () => {
     Alert.alert(
@@ -84,6 +140,8 @@ export default function ProfileScreen() {
     </TouchableOpacity>
   );
 
+  const styles = getStyles(colors);
+
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView showsVerticalScrollIndicator={false}>
@@ -98,10 +156,13 @@ export default function ProfileScreen() {
             <Ionicons name="person" size={40} color="#3fa58e" />
           </View>
           <View style={styles.userDetails}>
-            <Text style={styles.userName}>John Doe</Text>
-            <Text style={styles.userEmail}>john.doe@example.com</Text>
+            <Text style={styles.userName}>{userProfile?.fullName || 'User'}</Text>
+            <Text style={styles.userEmail}>{userProfile?.email || auth.currentUser?.email}</Text>
           </View>
-          <TouchableOpacity style={styles.editButton}>
+          <TouchableOpacity 
+            style={styles.editButton}
+            onPress={() => setShowEditName(true)}
+          >
             <Ionicons name="create-outline" size={20} color="#3fa58e" />
           </TouchableOpacity>
         </View>
@@ -124,48 +185,7 @@ export default function ProfileScreen() {
           </View>
         </View>
 
-        {/* Notifications Settings */}
-        <ProfileSection title="Notifications">
-          <SettingItem
-            icon="notifications"
-            title="Push Notifications"
-            subtitle="Receive medication reminders"
-            rightComponent={
-              <Switch
-                value={notificationsEnabled}
-                onValueChange={setNotificationsEnabled}
-                trackColor={{ false: '#e0e0e0', true: '#3fa58e' }}
-                thumbColor="#fff"
-              />
-            }
-          />
-          <SettingItem
-            icon="volume-high"
-            title="Sound"
-            subtitle="Play sound with notifications"
-            rightComponent={
-              <Switch
-                value={soundEnabled}
-                onValueChange={setSoundEnabled}
-                trackColor={{ false: '#e0e0e0', true: '#3fa58e' }}
-                thumbColor="#fff"
-              />
-            }
-          />
-          <SettingItem
-            icon="phone-portrait"
-            title="Vibration"
-            subtitle="Vibrate on notifications"
-            rightComponent={
-              <Switch
-                value={vibrationEnabled}
-                onValueChange={setVibrationEnabled}
-                trackColor={{ false: '#e0e0e0', true: '#3fa58e' }}
-                thumbColor="#fff"
-              />
-            }
-          />
-        </ProfileSection>
+
 
         {/* App Settings */}
         <ProfileSection title="App Settings">
@@ -175,8 +195,21 @@ export default function ProfileScreen() {
             subtitle="Switch to dark theme"
             rightComponent={
               <Switch
-                value={darkMode}
-                onValueChange={setDarkMode}
+                value={isDarkMode}
+                onValueChange={async (value) => {
+                  setIsDarkMode(value);
+                  // Save to Firebase
+                  try {
+                    const user = auth.currentUser;
+                    if (user) {
+                      await updateUserProfile(user.uid, {
+                        preferences: { darkMode: value }
+                      });
+                    }
+                  } catch (error) {
+                    console.error('Error saving dark mode preference:', error);
+                  }
+                }}
                 trackColor={{ false: '#e0e0e0', true: '#3fa58e' }}
                 thumbColor="#fff"
               />
@@ -209,77 +242,7 @@ export default function ProfileScreen() {
           />
         </ProfileSection>
 
-        {/* Care Team */}
-        <ProfileSection title="Care Team">
-          <SettingItem
-            icon="people"
-            title="Caregivers"
-            subtitle="Manage family and caregivers"
-            onPress={() => Alert.alert('Caregivers', 'Caregiver management would open here')}
-          />
-          <SettingItem
-            icon="medical"
-            title="Healthcare Providers"
-            subtitle="Add doctors and pharmacies"
-            onPress={() => Alert.alert('Healthcare Providers', 'Provider management would open here')}
-          />
-          <SettingItem
-            icon="share"
-            title="Share Reports"
-            subtitle="Export and share medication data"
-            onPress={handleExportData}
-          />
-        </ProfileSection>
 
-        {/* Data & Privacy */}
-        <ProfileSection title="Data & Privacy">
-          <SettingItem
-            icon="cloud-download"
-            title="Backup Data"
-            subtitle="Backup to cloud storage"
-            onPress={() => Alert.alert('Backup', 'Data backup would be initiated here')}
-          />
-          <SettingItem
-            icon="download"
-            title="Export Data"
-            subtitle="Download your data as PDF/CSV"
-            onPress={handleExportData}
-          />
-          <SettingItem
-            icon="shield-checkmark"
-            title="Privacy Policy"
-            subtitle="View our privacy policy"
-            onPress={() => Alert.alert('Privacy Policy', 'Privacy policy would open here')}
-          />
-          <SettingItem
-            icon="document-text"
-            title="Terms of Service"
-            subtitle="View terms and conditions"
-            onPress={() => Alert.alert('Terms of Service', 'Terms would open here')}
-          />
-        </ProfileSection>
-
-        {/* Support */}
-        <ProfileSection title="Support">
-          <SettingItem
-            icon="help-circle"
-            title="Help Center"
-            subtitle="Get help and support"
-            onPress={() => Alert.alert('Help Center', 'Help center would open here')}
-          />
-          <SettingItem
-            icon="chatbubble"
-            title="Contact Support"
-            subtitle="Get in touch with our team"
-            onPress={() => Alert.alert('Contact Support', 'Support contact would open here')}
-          />
-          <SettingItem
-            icon="star"
-            title="Rate App"
-            subtitle="Rate us on the app store"
-            onPress={() => Alert.alert('Rate App', 'App store rating would open here')}
-          />
-        </ProfileSection>
 
         {/* Account Actions */}
         <View style={styles.accountActions}>
@@ -299,14 +262,56 @@ export default function ProfileScreen() {
           <Text style={styles.versionText}>MedMind v1.0.0</Text>
         </View>
       </ScrollView>
+      
+      {/* Edit Name Modal */}
+      <Modal
+        visible={showEditName}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowEditName(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Edit Name</Text>
+              <TouchableOpacity onPress={() => setShowEditName(false)}>
+                <Ionicons name="close" size={24} color="#666" />
+              </TouchableOpacity>
+            </View>
+            
+            <TextInput
+              style={styles.nameInput}
+              placeholder="Enter your full name"
+              value={newName}
+              onChangeText={setNewName}
+              autoCapitalize="words"
+            />
+            
+            <View style={styles.modalButtons}>
+              <TouchableOpacity 
+                style={styles.cancelButton}
+                onPress={() => setShowEditName(false)}
+              >
+                <Text style={styles.cancelButtonText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={styles.saveButton}
+                onPress={handleUpdateName}
+              >
+                <Text style={styles.saveButtonText}>Save</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
 
-const styles = StyleSheet.create({
+const getStyles = (colors) => StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f8f9fa',
+    backgroundColor: colors.background,
   },
   header: {
     paddingHorizontal: 20,
@@ -316,12 +321,12 @@ const styles = StyleSheet.create({
   headerTitle: {
     fontSize: 28,
     fontWeight: 'bold',
-    color: '#333',
+    color: colors.text,
   },
   userInfo: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#fff',
+    backgroundColor: colors.surface,
     marginHorizontal: 20,
     marginBottom: 20,
     padding: 20,
@@ -347,11 +352,11 @@ const styles = StyleSheet.create({
   userName: {
     fontSize: 20,
     fontWeight: 'bold',
-    color: '#333',
+    color: colors.text,
   },
   userEmail: {
     fontSize: 14,
-    color: '#666',
+    color: colors.textSecondary,
     marginTop: 2,
   },
   editButton: {
@@ -484,5 +489,67 @@ const styles = StyleSheet.create({
   versionText: {
     fontSize: 14,
     color: '#999',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalContent: {
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    padding: 20,
+    width: '90%',
+    maxWidth: 400,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#333',
+  },
+  nameInput: {
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    fontSize: 16,
+    marginBottom: 20,
+  },
+  modalButtons: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  cancelButton: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+    alignItems: 'center',
+  },
+  cancelButtonText: {
+    color: '#666',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  saveButton: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 8,
+    backgroundColor: '#3fa58e',
+    alignItems: 'center',
+  },
+  saveButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
   },
 });

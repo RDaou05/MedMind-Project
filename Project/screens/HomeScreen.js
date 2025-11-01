@@ -5,50 +5,163 @@ import {
   ScrollView,
   StyleSheet,
   TouchableOpacity,
-  SafeAreaView,
   Alert,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
+import { auth, getUserProfile, subscribeToUserMedications, addIntakeLog, subscribeToUserIntakeLogs, takeMedication } from '../firebase';
+import { useTheme } from '../contexts/ThemeContext';
 
 export default function HomeScreen({ navigation }) {
-  const [todayMedications, setTodayMedications] = useState([
-    {
-      id: 1,
-      name: 'Aspirin',
-      dosage: '81mg',
-      time: '08:00',
-      taken: false,
-      type: 'pill',
-    },
-    {
-      id: 2,
-      name: 'Vitamin D',
-      dosage: '1000 IU',
-      time: '12:00',
-      taken: true,
-      type: 'capsule',
-    },
-    {
-      id: 3,
-      name: 'Metformin',
-      dosage: '500mg',
-      time: '18:00',
-      taken: false,
-      type: 'pill',
-    },
-  ]);
+  const { colors } = useTheme();
+  const [userProfile, setUserProfile] = useState(null);
+  const [medications, setMedications] = useState([]);
+  const [todayMedications, setTodayMedications] = useState([]);
+  const [intakeLogs, setIntakeLogs] = useState([]);
+  const [adherenceRate, setAdherenceRate] = useState(0);
+  const [streak, setStreak] = useState(0);
+  const [loading, setLoading] = useState(true);
 
-  const [adherenceRate, setAdherenceRate] = useState(85);
-  const [streak, setStreak] = useState(7);
+  useEffect(() => {
+    const user = auth.currentUser;
+    if (!user) {
+      setLoading(false);
+      return;
+    }
 
-  const markAsTaken = (id) => {
-    setTodayMedications(prev =>
-      prev.map(med =>
-        med.id === id ? { ...med, taken: true } : med
-      )
-    );
-    Alert.alert('Success', 'Medication marked as taken!');
+    // Load user profile
+    const loadProfile = async () => {
+      try {
+        const profile = await getUserProfile(user.uid);
+        setUserProfile(profile);
+      } catch (profileError) {
+        console.log('No profile found, user may be new');
+      }
+    };
+    loadProfile();
+
+    let currentMeds = [];
+    let currentLogs = [];
+
+
+
+    // Subscribe to real-time medication updates
+    const unsubscribeMeds = subscribeToUserMedications(user.uid, (userMeds) => {
+      console.log('Medications updated:', userMeds.length, 'medications received');
+      currentMeds = userMeds;
+      setMedications(userMeds);
+      updateTodayMedications(currentMeds, currentLogs);
+      setLoading(false);
+    });
+
+    // Subscribe to real-time intake log updates
+    const unsubscribeLogs = subscribeToUserIntakeLogs(user.uid, (logs) => {
+      console.log('Intake logs updated:', logs.length, 'logs received');
+      currentLogs = logs;
+      setIntakeLogs(logs);
+      updateTodayMedications(currentMeds, currentLogs);
+    });
+
+    setAdherenceRate(85);
+    setStreak(7);
+
+    // Cleanup subscriptions on unmount
+    return () => {
+      unsubscribeMeds();
+      unsubscribeLogs();
+    };
+  }, []);
+
+  const updateTodayMedications = (userMeds, logs) => {
+    console.log('updateTodayMedications called with:', userMeds.length, 'meds and', logs.length, 'logs');
+    if (!userMeds.length) return;
+    
+    const today = new Date().toISOString().split('T')[0];
+    console.log('Today is:', today);
+    
+    const todayMeds = userMeds.map(med => {
+      // Check if there's an intake log for this medication today
+      const todayLog = logs.find(log => {
+        if (!log.date || log.medicationId !== med.id) return false;
+        
+        let logDate;
+        try {
+          if (log.date instanceof Date) {
+            logDate = log.date.toISOString().split('T')[0];
+          } else if (typeof log.date === 'string') {
+            logDate = log.date.split('T')[0];
+          } else if (log.date.toDate && typeof log.date.toDate === 'function') {
+            // Firebase Timestamp
+            logDate = log.date.toDate().toISOString().split('T')[0];
+          } else if (log.date.seconds) {
+            // Firebase Timestamp object
+            logDate = new Date(log.date.seconds * 1000).toISOString().split('T')[0];
+          } else {
+            return false;
+          }
+          const match = logDate === today;
+          if (match && log.medicationId === med.id) {
+            console.log('Found matching log for', med.name, ':', log.status, 'on', logDate);
+          }
+          return match;
+        } catch (error) {
+          console.error('Error parsing log date:', error);
+          return false;
+        }
+      });
+      
+      const taken = !!todayLog && todayLog.status === 'taken';
+      console.log('Medication', med.name, '- taken:', taken, 'todayLog:', !!todayLog);
+      
+      return {
+        id: med.id,
+        name: med.name,
+        dosage: med.dosage,
+        time: med.times?.[0] || '08:00',
+        taken: taken,
+        type: med.form || 'pill',
+      };
+    });
+    
+    setTodayMedications(todayMeds);
+  };
+
+  const markAsTaken = async (id) => {
+    try {
+      // Immediately update local state
+      setTodayMedications(prev =>
+        prev.map(med =>
+          med.id === id ? { ...med, taken: true } : med
+        )
+      );
+      
+      const user = auth.currentUser;
+      if (user) {
+        const today = new Date();
+        const intakeData = {
+          medicationId: id,
+          date: today,
+          status: 'taken',
+          actualTime: today.toTimeString().slice(0, 5),
+          notes: null
+        };
+        
+        await addIntakeLog(user.uid, intakeData);
+        await takeMedication(id, 1);
+        Alert.alert('Success', 'Medication marked as taken!');
+      }
+    } catch (error) {
+      console.error('Error marking medication as taken:', error);
+      Alert.alert('Error', 'Failed to mark medication as taken');
+      
+      // Revert local state on error
+      setTodayMedications(prev =>
+        prev.map(med =>
+          med.id === id ? { ...med, taken: false } : med
+        )
+      );
+    }
   };
 
   const getGreeting = () => {
@@ -61,6 +174,8 @@ export default function HomeScreen({ navigation }) {
   const upcomingMeds = todayMedications.filter(med => !med.taken);
   const completedToday = todayMedications.filter(med => med.taken).length;
 
+  const styles = getStyles(colors);
+
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView showsVerticalScrollIndicator={false}>
@@ -68,7 +183,7 @@ export default function HomeScreen({ navigation }) {
         <View style={styles.header}>
           <View>
             <Text style={styles.greeting}>{getGreeting()}</Text>
-            <Text style={styles.userName}>John Doe</Text>
+            <Text style={styles.userName}>{userProfile?.fullName || 'User'}</Text>
           </View>
           <TouchableOpacity style={styles.notificationButton}>
             <Ionicons name="notifications-outline" size={24} color="#333" />
@@ -181,10 +296,10 @@ export default function HomeScreen({ navigation }) {
   );
 }
 
-const styles = StyleSheet.create({
+const getStyles = (colors) => StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f8f9fa',
+    backgroundColor: colors.background,
   },
   header: {
     flexDirection: 'row',

@@ -1,61 +1,128 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
   StyleSheet,
-  SafeAreaView,
   TouchableOpacity,
   ScrollView,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Calendar } from 'react-native-calendars';
 import { Ionicons } from '@expo/vector-icons';
+import { auth, subscribeToUserMedications, subscribeToUserIntakeLogs, addIntakeLog, takeMedication, db } from '../firebase';
+import { deleteDoc, doc, updateDoc, getDoc } from 'firebase/firestore';
 
 export default function CalendarScreen() {
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
-  const [viewMode, setViewMode] = useState('calendar'); // 'calendar' or 'list'
+  const [viewMode, setViewMode] = useState('calendar');
+  const [medications, setMedications] = useState([]);
+  const [intakeLogs, setIntakeLogs] = useState([]);
+  const [adherenceData, setAdherenceData] = useState({});
+  const [loading, setLoading] = useState(true);
 
-  // Mock data for medication adherence
-  const adherenceData = {
-    '2024-01-15': { marked: true, dotColor: '#3fa58e', adherence: 100 },
-    '2024-01-16': { marked: true, dotColor: '#FFB800', adherence: 75 },
-    '2024-01-17': { marked: true, dotColor: '#FF6B6B', adherence: 50 },
-    '2024-01-18': { marked: true, dotColor: '#3fa58e', adherence: 100 },
-    '2024-01-19': { marked: true, dotColor: '#3fa58e', adherence: 100 },
-    '2024-01-20': { marked: true, dotColor: '#FFB800', adherence: 67 },
-    '2024-01-21': { marked: true, dotColor: '#FF6B6B', adherence: 33 },
-  };
+  useEffect(() => {
+    const user = auth.currentUser;
+    if (!user) {
+      setLoading(false);
+      return;
+    }
 
-  // Mock medication data for selected date
+    // Subscribe to real-time medication updates
+    const unsubscribeMeds = subscribeToUserMedications(user.uid, (medications) => {
+      setMedications(medications);
+      
+      // Generate adherence data when medications change
+      const adherence = {};
+      if (medications.length > 0) {
+        const today = new Date().toISOString().split('T')[0];
+        adherence[today] = { marked: true, dotColor: '#3fa58e', adherence: 100 };
+      }
+      setAdherenceData(adherence);
+      setLoading(false);
+    });
+
+    // Subscribe to real-time intake log updates
+    const unsubscribeLogs = subscribeToUserIntakeLogs(user.uid, (logs) => {
+      console.log('Calendar: Intake logs updated:', logs.length, 'logs received');
+      setIntakeLogs(logs);
+    });
+
+    // Cleanup subscriptions on unmount
+    return () => {
+      unsubscribeMeds();
+      unsubscribeLogs();
+    };
+  }, []);
+
   const getMedicationsForDate = (date) => {
-    return [
-      {
-        id: 1,
-        name: 'Aspirin',
-        dosage: '81mg',
-        scheduledTime: '08:00',
-        actualTime: '08:15',
-        status: 'taken',
-        notes: 'Taken with breakfast',
-      },
-      {
-        id: 2,
-        name: 'Vitamin D',
-        dosage: '1000 IU',
-        scheduledTime: '12:00',
-        actualTime: null,
-        status: 'missed',
-        notes: null,
-      },
-      {
-        id: 3,
-        name: 'Metformin',
-        dosage: '500mg',
-        scheduledTime: '18:00',
-        actualTime: '18:00',
-        status: 'taken',
-        notes: 'Taken with dinner',
-      },
-    ];
+    // Return user's actual medications for the selected date with real status
+    return medications.filter(med => {
+      // Only show medications that were created on or before the selected date
+      const medicationCreatedDate = med.createdAt instanceof Date ? 
+        med.createdAt.toISOString().split('T')[0] : 
+        med.createdAt.toDate ? med.createdAt.toDate().toISOString().split('T')[0] : 
+        med.createdAt.seconds ? new Date(med.createdAt.seconds * 1000).toISOString().split('T')[0] : 
+        new Date().toISOString().split('T')[0];
+      
+      return date >= medicationCreatedDate;
+    }).map(med => {
+      // Find intake log for this medication on this date using date string comparison
+      const selectedDateString = date; // date is already in YYYY-MM-DD format
+      const intakeLog = intakeLogs.find(log => {
+        if (!log.date || log.medicationId !== med.id) return false;
+        
+        let logDateString;
+        if (log.date instanceof Date) {
+          logDateString = log.date.toISOString().split('T')[0];
+        } else if (typeof log.date === 'string') {
+          logDateString = log.date.split('T')[0];
+        } else if (log.date.toDate && typeof log.date.toDate === 'function') {
+          // Firebase Timestamp
+          logDateString = log.date.toDate().toISOString().split('T')[0];
+        } else if (log.date.seconds) {
+          // Firebase Timestamp object
+          logDateString = new Date(log.date.seconds * 1000).toISOString().split('T')[0];
+        } else {
+          return false;
+        }
+        
+        const match = logDateString === selectedDateString;
+        if (match) {
+          console.log('Found matching log for', med.name, 'on', selectedDateString, ':', log.status);
+        }
+        return match;
+      });
+      
+      let status = 'scheduled';
+      let actualTime = null;
+      
+      if (intakeLog) {
+        status = intakeLog.status || 'taken';
+        actualTime = intakeLog.actualTime;
+      } else {
+        // For past dates, mark as missed if no log exists AND medication was created before that date
+        const today = new Date().toISOString().split('T')[0];
+        const medicationCreatedDate = med.createdAt instanceof Date ? 
+          med.createdAt.toISOString().split('T')[0] : 
+          med.createdAt.toDate ? med.createdAt.toDate().toISOString().split('T')[0] : 
+          med.createdAt.seconds ? new Date(med.createdAt.seconds * 1000).toISOString().split('T')[0] : 
+          today;
+        
+        if (selectedDateString < today && selectedDateString >= medicationCreatedDate) {
+          status = 'missed';
+        }
+      }
+      
+      return {
+        id: med.id,
+        name: med.name,
+        dosage: med.dosage,
+        scheduledTime: med.times?.[0] || '08:00',
+        actualTime: actualTime,
+        status: status,
+        notes: intakeLog?.notes || null,
+      };
+    });
   };
 
   const getStatusColor = (status) => {
@@ -85,6 +152,84 @@ export default function CalendarScreen() {
   };
 
   const selectedDateMedications = getMedicationsForDate(selectedDate);
+  const untakeMedication = async (medicationId, dateString, wasTaken = false) => {
+    try {
+      const user = auth.currentUser;
+      if (user) {
+        // Find and delete the intake log for this medication on this date
+        const matchingLog = intakeLogs.find(log => {
+          if (!log.date || log.medicationId !== medicationId) return false;
+          
+          let logDateString;
+          if (log.date instanceof Date) {
+            logDateString = log.date.toISOString().split('T')[0];
+          } else if (typeof log.date === 'string') {
+            logDateString = log.date.split('T')[0];
+          } else if (log.date.toDate && typeof log.date.toDate === 'function') {
+            logDateString = log.date.toDate().toISOString().split('T')[0];
+          } else if (log.date.seconds) {
+            logDateString = new Date(log.date.seconds * 1000).toISOString().split('T')[0];
+          } else {
+            return false;
+          }
+          
+          return logDateString === dateString;
+        });
+        
+        if (matchingLog) {
+          await deleteDoc(doc(db, 'intakeLogs', matchingLog.id));
+          
+          // Only add serving back if medication was actually taken (not missed)
+          if (wasTaken) {
+            const medicationRef = doc(db, 'medications', medicationId);
+            const medicationDoc = await getDoc(medicationRef);
+            
+            if (medicationDoc.exists()) {
+              const currentData = medicationDoc.data();
+              const newServings = (currentData.currentServings || 0) + 1;
+              
+              await updateDoc(medicationRef, {
+                currentServings: newServings,
+                updatedAt: new Date()
+              });
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error untaking medication:', error);
+    }
+  };
+
+  const markMedicationStatus = async (medicationId, status, dateString) => {
+    console.log('markMedicationStatus called:', { medicationId, status, dateString });
+    try {
+      const user = auth.currentUser;
+      if (user) {
+        // Create date in local timezone to avoid UTC conversion issues
+        const [year, month, day] = dateString.split('-');
+        const localDate = new Date(parseInt(year), parseInt(month) - 1, parseInt(day), 12, 0, 0);
+        
+        const intakeData = {
+          medicationId: medicationId,
+          date: localDate,
+          status: status,
+          actualTime: status === 'taken' ? new Date().toTimeString().slice(0, 5) : null,
+          notes: null
+        };
+        
+        console.log('Saving calendar intake data:', intakeData);
+        await addIntakeLog(user.uid, intakeData);
+        await takeMedication(medicationId, 1);
+        console.log('Calendar intake log saved successfully');
+      } else {
+        console.log('No user found for calendar action');
+      }
+    } catch (error) {
+      console.error('Error marking medication status:', error);
+    }
+  };
+
   const adherenceForDate = adherenceData[selectedDate];
 
   return (
@@ -177,12 +322,16 @@ export default function CalendarScreen() {
           <View style={styles.selectedDateContainer}>
             <View style={styles.selectedDateHeader}>
               <Text style={styles.selectedDateTitle}>
-                {new Date(selectedDate).toLocaleDateString('en-US', {
-                  weekday: 'long',
-                  year: 'numeric',
-                  month: 'long',
-                  day: 'numeric',
-                })}
+                {(() => {
+                  const [year, month, day] = selectedDate.split('-');
+                  const date = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
+                  return date.toLocaleDateString('en-US', {
+                    weekday: 'long',
+                    year: 'numeric',
+                    month: 'long',
+                    day: 'numeric',
+                  });
+                })()}
               </Text>
               {adherenceForDate && (
                 <View style={styles.adherenceChip}>
@@ -224,10 +373,48 @@ export default function CalendarScreen() {
                     )}
                   </View>
                   
-                  <View style={styles.statusBadge}>
-                    <Text style={[styles.statusText, { color: getStatusColor(medication.status) }]}>
-                      {medication.status.charAt(0).toUpperCase() + medication.status.slice(1)}
-                    </Text>
+                  <View style={styles.medicationActions}>
+                    {medication.status === 'scheduled' && (
+                      <>
+                        <TouchableOpacity
+                          style={[styles.actionButton, styles.takenButton]}
+                          onPress={() => markMedicationStatus(medication.id, 'taken', selectedDate)}
+                        >
+                          <Ionicons name="checkmark" size={16} color="#fff" />
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={[styles.actionButton, styles.missedButton]}
+                          onPress={() => markMedicationStatus(medication.id, 'missed', selectedDate)}
+                        >
+                          <Ionicons name="close" size={16} color="#fff" />
+                        </TouchableOpacity>
+                      </>
+                    )}
+                    
+                    {(medication.status === 'taken' || medication.status === 'missed') && (
+                      <TouchableOpacity
+                        style={[styles.actionButton, styles.untakeButton]}
+                        onPress={() => untakeMedication(medication.id, selectedDate, medication.status === 'taken')}
+                      >
+                        <Ionicons name="refresh" size={16} color="#fff" />
+                      </TouchableOpacity>
+                    )}
+                    
+                    <View style={[
+                      styles.statusBadge,
+                      medication.status === 'taken' && styles.takenBadge,
+                      medication.status === 'missed' && styles.missedBadge
+                    ]}>
+                      <Ionicons 
+                        name={getStatusIcon(medication.status)} 
+                        size={16} 
+                        color={getStatusColor(medication.status)} 
+                        style={styles.statusIcon}
+                      />
+                      <Text style={[styles.statusText, { color: getStatusColor(medication.status) }]}>
+                        {medication.status.charAt(0).toUpperCase() + medication.status.slice(1)}
+                      </Text>
+                    </View>
                   </View>
                 </View>
               ))}
@@ -431,8 +618,43 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
     marginTop: 4,
   },
+  medicationActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  actionButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  takenButton: {
+    backgroundColor: '#3fa58e',
+  },
+  missedButton: {
+    backgroundColor: '#FF6B6B',
+  },
+  untakeButton: {
+    backgroundColor: '#FFB800',
+  },
   statusBadge: {
-    marginLeft: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+    marginLeft: 8,
+  },
+  takenBadge: {
+    backgroundColor: '#f0f9f7',
+  },
+  missedBadge: {
+    backgroundColor: '#fff5f5',
+  },
+  statusIcon: {
+    marginRight: 4,
   },
   statusText: {
     fontSize: 12,
