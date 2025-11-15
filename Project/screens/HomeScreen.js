@@ -12,6 +12,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { auth, getUserProfile, subscribeToUserMedications, addIntakeLog, subscribeToUserIntakeLogs, takeMedication } from '../firebase';
 import { useTheme } from '../contexts/ThemeContext';
+import { syncOfflineMedications } from '../services/offlineService';
 
 export default function HomeScreen({ navigation }) {
   const { colors } = useTheme();
@@ -40,6 +41,9 @@ export default function HomeScreen({ navigation }) {
       }
     };
     loadProfile();
+
+    // Sync offline medications when app loads
+    syncOfflineMedications(user.uid);
 
     let currentMeds = [];
     let currentLogs = [];
@@ -215,14 +219,14 @@ export default function HomeScreen({ navigation }) {
                 {completedToday} of {todayMedications.length} medications taken
               </Text>
               <Text style={styles.progressPercentage}>
-                {Math.round((completedToday / todayMedications.length) * 100)}%
+                {todayMedications.length === 0 ? '0' : Math.round((completedToday / todayMedications.length) * 100)}%
               </Text>
             </View>
             <View style={styles.progressBar}>
               <View 
                 style={[
                   styles.progressFill, 
-                  { width: `${(completedToday / todayMedications.length) * 100}%` }
+                  { width: `${todayMedications.length === 0 ? 0 : (completedToday / todayMedications.length) * 100}%` }
                 ]} 
               />
             </View>

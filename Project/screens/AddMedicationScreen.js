@@ -16,13 +16,14 @@ import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { auth, addMedication, updateMedication } from '../firebase';
 import { searchMedicationsAPI } from '../services/medicationAPI';
+import { saveOfflineMedication } from '../services/offlineService';
 
 export default function AddMedicationScreen({ navigation, route }) {
   const editMedication = route?.params?.editMedication;
   const isEditing = !!editMedication;
   
   const [medicationName, setMedicationName] = useState(editMedication?.name || '');
-  const [dosage, setDosage] = useState(editMedication?.dosage || '');
+
   const [selectedForm, setSelectedForm] = useState(editMedication?.form || 'pill');
   const [selectedSchedule, setSelectedSchedule] = useState(editMedication?.scheduleType || 'fixed');
   const [times, setTimes] = useState(editMedication?.times || ['08:00']);
@@ -34,6 +35,7 @@ export default function AddMedicationScreen({ navigation, route }) {
   const [currentMonth, setCurrentMonth] = useState(new Date());
   const [rangeStartDate, setRangeStartDate] = useState(null);
   const [servingSize, setServingSize] = useState(editMedication?.servingSize?.toString() || '1');
+  const [servingUnits, setServingUnits] = useState(editMedication?.servingUnits || 'tablet');
   const [servingsPerContainer, setServingsPerContainer] = useState(editMedication?.servingsPerContainer?.toString() || '');
   const [currentServings, setCurrentServings] = useState(editMedication?.currentServings?.toString() || '');
   const [servingThreshold, setServingThreshold] = useState(editMedication?.servingThreshold?.toString() || '7');
@@ -44,6 +46,7 @@ export default function AddMedicationScreen({ navigation, route }) {
   const [showTimePicker, setShowTimePicker] = useState(false);
   const [showDayPicker, setShowDayPicker] = useState(false);
   const [showCalendarPicker, setShowCalendarPicker] = useState(false);
+  const [showUnitsPicker, setShowUnitsPicker] = useState(false);
   const [selectedTimeIndex, setSelectedTimeIndex] = useState(0);
   const [medicationSuggestions, setMedicationSuggestions] = useState([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
@@ -56,6 +59,10 @@ export default function AddMedicationScreen({ navigation, route }) {
     { id: 'injection', name: 'Injection', icon: 'medical-outline' },
     { id: 'cream', name: 'Cream/Ointment', icon: 'color-palette' },
     { id: 'inhaler', name: 'Inhaler', icon: 'cloud' },
+  ];
+
+  const servingUnitOptions = [
+    'tablet', 'capsule', 'ml', 'mg', 'drop', 'spray', 'puff', 'tsp', 'tbsp'
   ];
 
   const scheduleTypes = [
@@ -124,10 +131,7 @@ export default function AddMedicationScreen({ navigation, route }) {
       Alert.alert('Error', 'Please enter a medication name');
       return;
     }
-    if (!dosage.trim()) {
-      Alert.alert('Error', 'Please enter the dosage');
-      return;
-    }
+
     if (!servingsPerContainer.trim()) {
       Alert.alert('Error', 'Please enter servings per container');
       return;
@@ -142,7 +146,6 @@ export default function AddMedicationScreen({ navigation, route }) {
       if (user) {
         const medicationData = {
           name: medicationName.trim(),
-          dosage: dosage.trim(),
           form: selectedForm,
           scheduleType: selectedSchedule,
           times: times,
@@ -154,17 +157,41 @@ export default function AddMedicationScreen({ navigation, route }) {
           color: '#3fa58e'
         };
         
-        if (isEditing) {
-          // Update existing medication
-          await updateMedication(editMedication.id, medicationData);
-        } else {
-          await addMedication(user.uid, medicationData);
+        let saveSuccessful = false;
+        
+        try {
+          if (isEditing) {
+            // Update existing medication
+            await updateMedication(editMedication.id, medicationData);
+          } else {
+            await addMedication(user.uid, medicationData);
+          }
+          saveSuccessful = true;
+          Alert.alert(
+            'Success',
+            `Medication ${isEditing ? 'updated' : 'added'} successfully!`,
+            [{ text: 'OK', onPress: () => {
+              setShowSummary(false);
+              navigation.goBack();
+            }}]
+          );
+        } catch (networkError) {
+          // Save offline if network error
+          try {
+            await saveOfflineMedication(medicationData, isEditing, editMedication?.id);
+            saveSuccessful = true;
+            Alert.alert(
+              'Saved Offline',
+              `Medication saved locally. It will sync when you're back online.`,
+              [{ text: 'OK', onPress: () => {
+                setShowSummary(false);
+                navigation.goBack();
+              }}]
+            );
+          } catch (offlineError) {
+            Alert.alert('Error', 'Failed to save medication');
+          }
         }
-        Alert.alert(
-          'Success',
-          `Medication ${isEditing ? 'updated' : 'added'} successfully!`,
-          [{ text: 'OK', onPress: () => navigation.goBack() }]
-        );
       }
     } catch (error) {
       console.error('Error saving medication:', error);
@@ -203,10 +230,7 @@ export default function AddMedicationScreen({ navigation, route }) {
               <Text style={styles.summaryValue}>{medicationName}</Text>
             </View>
             
-            <View style={styles.summarySection}>
-              <Text style={styles.summaryLabel}>Dosage</Text>
-              <Text style={styles.summaryValue}>{dosage}</Text>
-            </View>
+
             
             <View style={styles.summarySection}>
               <Text style={styles.summaryLabel}>Form</Text>
@@ -225,7 +249,7 @@ export default function AddMedicationScreen({ navigation, route }) {
             
             <View style={styles.summarySection}>
               <Text style={styles.summaryLabel}>Serving Size</Text>
-              <Text style={styles.summaryValue}>{servingSize}</Text>
+              <Text style={styles.summaryValue}>{servingSize} {servingUnits}</Text>
             </View>
             
             <View style={styles.summarySection}>
@@ -316,15 +340,7 @@ export default function AddMedicationScreen({ navigation, route }) {
             </View>
           </View>
 
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>Dosage *</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="e.g., 500mg, 10ml, 1 tablet"
-              value={dosage}
-              onChangeText={setDosage}
-            />
-          </View>
+
 
           <View style={styles.inputGroup}>
             <Text style={styles.label}>Dosage Form</Text>
@@ -504,13 +520,22 @@ export default function AddMedicationScreen({ navigation, route }) {
           
           <View style={styles.inputGroup}>
             <Text style={styles.label}>Serving Size</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="Amount per dose (e.g., 1, 0.5, 2)"
-              value={servingSize}
-              onChangeText={setServingSize}
-              keyboardType="decimal-pad"
-            />
+            <View style={styles.servingSizeRow}>
+              <TextInput
+                style={[styles.input, styles.servingSizeInput]}
+                placeholder="Amount"
+                value={servingSize}
+                onChangeText={setServingSize}
+                keyboardType="decimal-pad"
+              />
+              <TouchableOpacity
+                style={styles.unitsPicker}
+                onPress={() => setShowUnitsPicker(true)}
+              >
+                <Text style={styles.unitsText}>{servingUnits}</Text>
+                <Ionicons name="chevron-down" size={16} color="#666" />
+              </TouchableOpacity>
+            </View>
           </View>
 
           <View style={styles.inputGroup}>
@@ -574,8 +599,12 @@ export default function AddMedicationScreen({ navigation, route }) {
         animationType="slide"
         onRequestClose={() => setShowFormPicker(false)}
       >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
+        <TouchableOpacity 
+          style={styles.modalOverlay} 
+          activeOpacity={1} 
+          onPress={() => setShowFormPicker(false)}
+        >
+          <TouchableOpacity style={styles.modalContent} activeOpacity={1} onPress={() => {}}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Select Dosage Form</Text>
               <TouchableOpacity onPress={() => setShowFormPicker(false)}>
@@ -602,8 +631,8 @@ export default function AddMedicationScreen({ navigation, route }) {
                 )}
               </TouchableOpacity>
             ))}
-          </View>
-        </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
       </Modal>
 
       {/* Schedule Type Picker Modal */}
@@ -613,8 +642,12 @@ export default function AddMedicationScreen({ navigation, route }) {
         animationType="slide"
         onRequestClose={() => setShowSchedulePicker(false)}
       >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
+        <TouchableOpacity 
+          style={styles.modalOverlay} 
+          activeOpacity={1} 
+          onPress={() => setShowSchedulePicker(false)}
+        >
+          <TouchableOpacity style={styles.modalContent} activeOpacity={1} onPress={() => {}}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Select Schedule Type</Text>
               <TouchableOpacity onPress={() => setShowSchedulePicker(false)}>
@@ -643,8 +676,8 @@ export default function AddMedicationScreen({ navigation, route }) {
                 )}
               </TouchableOpacity>
             ))}
-          </View>
-        </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
       </Modal>
 
       {/* Day Pattern Picker Modal */}
@@ -654,8 +687,12 @@ export default function AddMedicationScreen({ navigation, route }) {
         animationType="slide"
         onRequestClose={() => setShowDayPicker(false)}
       >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
+        <TouchableOpacity 
+          style={styles.modalOverlay} 
+          activeOpacity={1} 
+          onPress={() => setShowDayPicker(false)}
+        >
+          <TouchableOpacity style={styles.modalContent} activeOpacity={1} onPress={() => {}}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Select Day Pattern</Text>
               <TouchableOpacity onPress={() => setShowDayPicker(false)}>
@@ -681,8 +718,8 @@ export default function AddMedicationScreen({ navigation, route }) {
                 )}
               </TouchableOpacity>
             ))}
-          </View>
-        </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
       </Modal>
 
       {/* Date Picker Modal */}
@@ -692,8 +729,12 @@ export default function AddMedicationScreen({ navigation, route }) {
         animationType="slide"
         onRequestClose={() => setShowDatePicker(false)}
       >
-        <View style={styles.timePickerOverlay}>
-          <View style={styles.timePickerModal}>
+        <TouchableOpacity 
+          style={styles.timePickerOverlay} 
+          activeOpacity={1} 
+          onPress={() => setShowDatePicker(false)}
+        >
+          <TouchableOpacity style={styles.timePickerModal} activeOpacity={1} onPress={() => {}}>
             <View style={styles.timePickerHeader}>
               <TouchableOpacity onPress={() => setShowDatePicker(false)}>
                 <Text style={styles.timePickerCancel}>Cancel</Text>
@@ -713,8 +754,8 @@ export default function AddMedicationScreen({ navigation, route }) {
                 }
               }}
             />
-          </View>
-        </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
       </Modal>
 
       {/* Calendar Picker Modal */}
@@ -724,8 +765,12 @@ export default function AddMedicationScreen({ navigation, route }) {
         animationType="slide"
         onRequestClose={() => setShowCalendarPicker(false)}
       >
-        <View style={styles.modalOverlay}>
-          <View style={styles.calendarModalContent}>
+        <TouchableOpacity 
+          style={styles.modalOverlay} 
+          activeOpacity={1} 
+          onPress={() => setShowCalendarPicker(false)}
+        >
+          <TouchableOpacity style={styles.calendarModalContent} activeOpacity={1} onPress={() => {}}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Select Calendar Days</Text>
               <TouchableOpacity onPress={() => setShowCalendarPicker(false)}>
@@ -861,8 +906,8 @@ export default function AddMedicationScreen({ navigation, route }) {
                 return weeks;
               })()}
             </View>
-          </View>
-        </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
       </Modal>
 
       {/* Time Picker Modal */}
@@ -872,8 +917,12 @@ export default function AddMedicationScreen({ navigation, route }) {
         animationType="slide"
         onRequestClose={() => setShowTimePicker(false)}
       >
-        <View style={styles.timePickerOverlay}>
-          <View style={styles.timePickerModal}>
+        <TouchableOpacity 
+          style={styles.timePickerOverlay} 
+          activeOpacity={1} 
+          onPress={() => setShowTimePicker(false)}
+        >
+          <TouchableOpacity style={styles.timePickerModal} activeOpacity={1} onPress={() => {}}>
             <View style={styles.timePickerHeader}>
               <TouchableOpacity onPress={() => setShowTimePicker(false)}>
                 <Text style={styles.timePickerCancel}>Cancel</Text>
@@ -897,8 +946,50 @@ export default function AddMedicationScreen({ navigation, route }) {
               style={styles.timePicker}
               textColor="blue"
             />
-          </View>
-        </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Units Picker Modal */}
+      <Modal
+        visible={showUnitsPicker}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowUnitsPicker(false)}
+      >
+        <TouchableOpacity 
+          style={styles.modalOverlay} 
+          activeOpacity={1} 
+          onPress={() => setShowUnitsPicker(false)}
+        >
+          <TouchableOpacity style={styles.modalContent} activeOpacity={1} onPress={() => {}}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Select Units</Text>
+              <TouchableOpacity onPress={() => setShowUnitsPicker(false)}>
+                <Ionicons name="close" size={24} color="#666" />
+              </TouchableOpacity>
+            </View>
+            
+            {servingUnitOptions.map((unit) => (
+              <TouchableOpacity
+                key={unit}
+                style={[
+                  styles.modalOption,
+                  servingUnits === unit && styles.selectedOption
+                ]}
+                onPress={() => {
+                  setServingUnits(unit);
+                  setShowUnitsPicker(false);
+                }}
+              >
+                <Text style={styles.modalOptionText}>{unit}</Text>
+                {servingUnits === unit && (
+                  <Ionicons name="checkmark" size={20} color="#3fa58e" />
+                )}
+              </TouchableOpacity>
+            ))}
+          </TouchableOpacity>
+        </TouchableOpacity>
       </Modal>
     </SafeAreaView>
   );
@@ -1372,5 +1463,28 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     textAlign: 'center',
+  },
+  servingSizeRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  servingSizeInput: {
+    flex: 1,
+  },
+  unitsPicker: {
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    minWidth: 80,
+  },
+  unitsText: {
+    fontSize: 16,
+    color: '#333',
+    marginRight: 4,
   },
 });
