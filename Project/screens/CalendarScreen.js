@@ -19,6 +19,11 @@ export default function CalendarScreen() {
   const [intakeLogs, setIntakeLogs] = useState([]);
   const [adherenceData, setAdherenceData] = useState({});
   const [loading, setLoading] = useState(true);
+  const [currentMonth, setCurrentMonth] = useState(new Date());
+  const [showStats, setShowStats] = useState(false);
+  const [monthlyStats, setMonthlyStats] = useState({});
+  const [filterMedication, setFilterMedication] = useState(null);
+  const [showFilters, setShowFilters] = useState(false);
 
   useEffect(() => {
     const user = auth.currentUser;
@@ -45,6 +50,7 @@ export default function CalendarScreen() {
     const unsubscribeLogs = subscribeToUserIntakeLogs(user.uid, (logs) => {
       console.log('Calendar: Intake logs updated:', logs.length, 'logs received');
       setIntakeLogs(logs);
+      calculateMonthlyStats(logs, medications);
     });
 
     // Cleanup subscriptions on unmount
@@ -54,9 +60,92 @@ export default function CalendarScreen() {
     };
   }, []);
 
+  const calculateMonthlyStats = (logs, meds) => {
+    const stats = {
+      totalDoses: 0,
+      takenDoses: 0,
+      missedDoses: 0,
+      adherenceRate: 0,
+      currentStreak: 0,
+      longestStreak: 0,
+      weeklyAverage: 0,
+      mostTakenMed: null,
+      leastTakenMed: null
+    };
+
+    const monthStart = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), 1);
+    const monthEnd = new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1, 0);
+    
+    const monthLogs = logs.filter(log => {
+      const logDate = log.date instanceof Date ? log.date : 
+        log.date.toDate ? log.date.toDate() : 
+        new Date(log.date.seconds * 1000);
+      return logDate >= monthStart && logDate <= monthEnd;
+    });
+
+    stats.totalDoses = monthLogs.length;
+    stats.takenDoses = monthLogs.filter(log => log.status === 'taken').length;
+    stats.missedDoses = monthLogs.filter(log => log.status === 'missed').length;
+    stats.adherenceRate = stats.totalDoses > 0 ? Math.round((stats.takenDoses / stats.totalDoses) * 100) : 0;
+
+    // Calculate streaks
+    const sortedLogs = logs.sort((a, b) => {
+      const dateA = a.date instanceof Date ? a.date : a.date.toDate ? a.date.toDate() : new Date(a.date.seconds * 1000);
+      const dateB = b.date instanceof Date ? b.date : b.date.toDate ? b.date.toDate() : new Date(b.date.seconds * 1000);
+      return dateB - dateA;
+    });
+
+    let currentStreak = 0;
+    let longestStreak = 0;
+    let tempStreak = 0;
+    
+    for (const log of sortedLogs) {
+      if (log.status === 'taken') {
+        tempStreak++;
+        if (tempStreak > longestStreak) longestStreak = tempStreak;
+      } else {
+        if (currentStreak === 0) currentStreak = tempStreak;
+        tempStreak = 0;
+      }
+    }
+    
+    stats.currentStreak = currentStreak || tempStreak;
+    stats.longestStreak = longestStreak;
+
+    // Medication stats
+    const medStats = {};
+    monthLogs.forEach(log => {
+      if (!medStats[log.medicationId]) {
+        medStats[log.medicationId] = { taken: 0, total: 0, name: '' };
+      }
+      medStats[log.medicationId].total++;
+      if (log.status === 'taken') medStats[log.medicationId].taken++;
+    });
+
+    meds.forEach(med => {
+      if (medStats[med.id]) {
+        medStats[med.id].name = med.name;
+      }
+    });
+
+    const medEntries = Object.entries(medStats);
+    if (medEntries.length > 0) {
+      const sortedByTaken = medEntries.sort((a, b) => b[1].taken - a[1].taken);
+      stats.mostTakenMed = sortedByTaken[0][1];
+      stats.leastTakenMed = sortedByTaken[sortedByTaken.length - 1][1];
+    }
+
+    setMonthlyStats(stats);
+  };
+
   const getMedicationsForDate = (date) => {
     // Return user's actual medications for the selected date with real status
-    return medications.filter(med => {
+    let filteredMeds = medications;
+    if (filterMedication) {
+      filteredMeds = medications.filter(med => med.id === filterMedication);
+    }
+    
+    return filteredMeds.filter(med => {
       // Only show medications that were created on or before the selected date
       const medicationCreatedDate = med.createdAt instanceof Date ? 
         med.createdAt.toISOString().split('T')[0] : 
@@ -237,29 +326,116 @@ export default function CalendarScreen() {
       {/* Header */}
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Medication Calendar</Text>
-        <View style={styles.viewToggle}>
+        <View style={styles.headerActions}>
           <TouchableOpacity
-            style={[styles.toggleButton, viewMode === 'calendar' && styles.activeToggle]}
-            onPress={() => setViewMode('calendar')}
+            style={styles.statsButton}
+            onPress={() => setShowFilters(!showFilters)}
           >
-            <Ionicons 
-              name="calendar" 
-              size={20} 
-              color={viewMode === 'calendar' ? '#fff' : '#666'} 
-            />
+            <Ionicons name="filter" size={20} color="#3fa58e" />
           </TouchableOpacity>
           <TouchableOpacity
-            style={[styles.toggleButton, viewMode === 'list' && styles.activeToggle]}
-            onPress={() => setViewMode('list')}
+            style={styles.statsButton}
+            onPress={() => setShowStats(!showStats)}
           >
-            <Ionicons 
-              name="list" 
-              size={20} 
-              color={viewMode === 'list' ? '#fff' : '#666'} 
-            />
+            <Ionicons name="stats-chart" size={20} color="#3fa58e" />
           </TouchableOpacity>
+          <View style={styles.viewToggle}>
+            <TouchableOpacity
+              style={[styles.toggleButton, viewMode === 'calendar' && styles.activeToggle]}
+              onPress={() => setViewMode('calendar')}
+            >
+              <Ionicons 
+                name="calendar" 
+                size={20} 
+                color={viewMode === 'calendar' ? '#fff' : '#666'} 
+              />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.toggleButton, viewMode === 'list' && styles.activeToggle]}
+              onPress={() => setViewMode('list')}
+            >
+              <Ionicons 
+                name="list" 
+                size={20} 
+                color={viewMode === 'list' ? '#fff' : '#666'} 
+              />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.toggleButton, viewMode === 'week' && styles.activeToggle]}
+              onPress={() => setViewMode('week')}
+            >
+              <Ionicons 
+                name="grid" 
+                size={20} 
+                color={viewMode === 'week' ? '#fff' : '#666'} 
+              />
+            </TouchableOpacity>
+          </View>
         </View>
       </View>
+
+      {/* Filter Panel */}
+      {showFilters && (
+        <View style={styles.filterPanel}>
+          <Text style={styles.filterTitle}>Filter by Medication</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterScroll}>
+            <TouchableOpacity
+              style={[styles.filterChip, !filterMedication && styles.activeFilter]}
+              onPress={() => setFilterMedication(null)}
+            >
+              <Text style={[styles.filterText, !filterMedication && styles.activeFilterText]}>All</Text>
+            </TouchableOpacity>
+            {medications.map(med => (
+              <TouchableOpacity
+                key={med.id}
+                style={[styles.filterChip, filterMedication === med.id && styles.activeFilter]}
+                onPress={() => setFilterMedication(filterMedication === med.id ? null : med.id)}
+              >
+                <Text style={[styles.filterText, filterMedication === med.id && styles.activeFilterText]}>{med.name}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
+      )}
+
+      {/* Statistics Panel */}
+      {showStats && (
+        <View style={styles.statsPanel}>
+          <Text style={styles.statsPanelTitle}>Monthly Statistics</Text>
+          <View style={styles.statsGrid}>
+            <View style={styles.statCard}>
+              <Text style={styles.statValue}>{monthlyStats.adherenceRate || 0}%</Text>
+              <Text style={styles.statLabel}>Adherence Rate</Text>
+            </View>
+            <View style={styles.statCard}>
+              <Text style={styles.statValue}>{monthlyStats.currentStreak || 0}</Text>
+              <Text style={styles.statLabel}>Current Streak</Text>
+            </View>
+            <View style={styles.statCard}>
+              <Text style={styles.statValue}>{monthlyStats.longestStreak || 0}</Text>
+              <Text style={styles.statLabel}>Longest Streak</Text>
+            </View>
+            <View style={styles.statCard}>
+              <Text style={styles.statValue}>{monthlyStats.takenDoses || 0}/{monthlyStats.totalDoses || 0}</Text>
+              <Text style={styles.statLabel}>Doses Taken</Text>
+            </View>
+          </View>
+          {monthlyStats.mostTakenMed && (
+            <View style={styles.medStatsContainer}>
+              <View style={styles.medStat}>
+                <Text style={styles.medStatLabel}>Most Consistent:</Text>
+                <Text style={styles.medStatValue}>{monthlyStats.mostTakenMed.name}</Text>
+              </View>
+              {monthlyStats.leastTakenMed && monthlyStats.leastTakenMed.name !== monthlyStats.mostTakenMed.name && (
+                <View style={styles.medStat}>
+                  <Text style={styles.medStatLabel}>Needs Attention:</Text>
+                  <Text style={styles.medStatValue}>{monthlyStats.leastTakenMed.name}</Text>
+                </View>
+              )}
+            </View>
+          )}
+        </View>
+      )}
 
       {/* Legend */}
       <View style={styles.legend}>
@@ -278,11 +454,13 @@ export default function CalendarScreen() {
       </View>
 
       {viewMode === 'calendar' ? (
-        <>
+        <ScrollView style={styles.scrollContainer} showsVerticalScrollIndicator={false}>
           {/* Calendar */}
           <Calendar
             style={styles.calendar}
+            current={currentMonth.toISOString().split('T')[0]}
             onDayPress={(day) => setSelectedDate(day.dateString)}
+            onMonthChange={(month) => setCurrentMonth(new Date(month.dateString))}
             markedDates={{
               ...adherenceData,
               [selectedDate]: {
@@ -333,13 +511,24 @@ export default function CalendarScreen() {
                   });
                 })()}
               </Text>
-              {adherenceForDate && (
-                <View style={styles.adherenceChip}>
-                  <Text style={styles.adherenceText}>
-                    {adherenceForDate.adherence}% Adherence
-                  </Text>
+              <View style={styles.headerRight}>
+                <View style={styles.quickStatItem}>
+                  <Text style={styles.quickStatValue}>{selectedDateMedications.filter(m => m.status === 'taken').length}/{selectedDateMedications.length}</Text>
+                  <Text style={styles.quickStatLabel}>Today</Text>
                 </View>
-              )}
+                {selectedDateMedications.some(m => m.status === 'scheduled') && (
+                  <TouchableOpacity
+                    style={styles.markAllButton}
+                    onPress={() => {
+                      selectedDateMedications
+                        .filter(m => m.status === 'scheduled')
+                        .forEach(m => markMedicationStatus(m.id, 'taken', selectedDate));
+                    }}
+                  >
+                    <Text style={styles.markAllText}>Mark All</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
             </View>
 
             <ScrollView style={styles.medicationsList} showsVerticalScrollIndicator={false}>
@@ -427,10 +616,68 @@ export default function CalendarScreen() {
               )}
             </ScrollView>
           </View>
-        </>
+        </ScrollView>
+      ) : viewMode === 'week' ? (
+        /* Week View */
+        <ScrollView style={styles.scrollContainer} showsVerticalScrollIndicator={false}>
+          <View style={styles.weekView}>
+            <Text style={styles.weekTitle}>This Week</Text>
+            {(() => {
+              const today = new Date();
+              const startOfWeek = new Date(today);
+              startOfWeek.setDate(today.getDate() - today.getDay());
+              
+              const weekDays = [];
+              for (let i = 0; i < 7; i++) {
+                const date = new Date(startOfWeek);
+                date.setDate(startOfWeek.getDate() + i);
+                const dateString = date.toISOString().split('T')[0];
+                const dayMeds = getMedicationsForDate(dateString);
+                const takenCount = dayMeds.filter(m => m.status === 'taken').length;
+                const totalCount = dayMeds.length;
+                
+                weekDays.push(
+                  <TouchableOpacity
+                    key={i}
+                    style={[styles.weekDay, selectedDate === dateString && styles.selectedWeekDay]}
+                    onPress={() => {
+                      setSelectedDate(dateString);
+                      setViewMode('calendar');
+                    }}
+                  >
+                    <Text style={styles.weekDayName}>{date.toLocaleDateString('en-US', { weekday: 'short' })}</Text>
+                    <Text style={styles.weekDayDate}>{date.getDate()}</Text>
+                    <View style={styles.weekDayProgress}>
+                      <Text style={styles.weekDayCount}>{takenCount}/{totalCount}</Text>
+                      <View style={styles.progressBar}>
+                        <View style={[styles.progressFill, { width: totalCount > 0 ? `${(takenCount/totalCount)*100}%` : '0%' }]} />
+                      </View>
+                    </View>
+                  </TouchableOpacity>
+                );
+              }
+              return weekDays;
+            })()}
+          </View>
+        </ScrollView>
       ) : (
         /* List View */
-        <ScrollView style={styles.listView} showsVerticalScrollIndicator={false}>
+        <>
+          <View style={styles.listActions}>
+            <TouchableOpacity
+              style={styles.exportButton}
+              onPress={() => {
+                const data = Object.entries(adherenceData)
+                  .map(([date, info]) => `${date}: ${info.adherence}% adherence`)
+                  .join('\n');
+                console.log('Export data:', data);
+              }}
+            >
+              <Ionicons name="download" size={16} color="#3fa58e" />
+              <Text style={styles.exportText}>Export</Text>
+            </TouchableOpacity>
+          </View>
+          <ScrollView style={styles.listView} showsVerticalScrollIndicator={false}>
           {Object.entries(adherenceData)
             .sort(([a], [b]) => new Date(b) - new Date(a))
             .map(([date, data]) => (
@@ -460,7 +707,8 @@ export default function CalendarScreen() {
                 <Ionicons name="chevron-forward" size={20} color="#ccc" />
               </TouchableOpacity>
             ))}
-        </ScrollView>
+          </ScrollView>
+        </>
       )}
     </SafeAreaView>
   );
@@ -483,6 +731,16 @@ const styles = StyleSheet.create({
     fontSize: 28,
     fontWeight: 'bold',
     color: '#333',
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  statsButton: {
+    padding: 8,
+    borderRadius: 20,
+    backgroundColor: '#f0f9f7',
   },
   viewToggle: {
     flexDirection: 'row',
@@ -536,10 +794,13 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 3,
   },
-  selectedDateContainer: {
+  scrollContainer: {
     flex: 1,
+  },
+  selectedDateContainer: {
     marginTop: 20,
     marginHorizontal: 20,
+    marginBottom: 20,
     backgroundColor: '#fff',
     borderRadius: 12,
     shadowColor: '#000',
@@ -547,6 +808,7 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.1,
     shadowRadius: 4,
     elevation: 3,
+    minHeight: 300,
   },
   selectedDateHeader: {
     flexDirection: 'row',
@@ -708,5 +970,206 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#666',
     marginTop: 2,
+  },
+  statsPanel: {
+    backgroundColor: '#fff',
+    marginHorizontal: 20,
+    marginBottom: 10,
+    borderRadius: 12,
+    padding: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  statsPanelTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#333',
+    marginBottom: 16,
+  },
+  statsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  statCard: {
+    flex: 1,
+    minWidth: '45%',
+    backgroundColor: '#f8f9fa',
+    padding: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  statValue: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#3fa58e',
+  },
+  statLabel: {
+    fontSize: 12,
+    color: '#666',
+    marginTop: 4,
+  },
+  medStatsContainer: {
+    marginTop: 16,
+    paddingTop: 16,
+    borderTopWidth: 1,
+    borderTopColor: '#f0f0f0',
+  },
+  medStat: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  medStatLabel: {
+    fontSize: 14,
+    color: '#666',
+  },
+  medStatValue: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#333',
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  markAllButton: {
+    backgroundColor: '#3fa58e',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+  },
+  markAllText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  quickStatItem: {
+    alignItems: 'center',
+  },
+  quickStatValue: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#3fa58e',
+  },
+  quickStatLabel: {
+    fontSize: 10,
+    color: '#666',
+    marginTop: 2,
+  },
+  filterPanel: {
+    backgroundColor: '#fff',
+    marginHorizontal: 20,
+    marginBottom: 10,
+    borderRadius: 12,
+    padding: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  filterTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#333',
+    marginBottom: 12,
+  },
+  filterScroll: {
+    flexDirection: 'row',
+  },
+  filterChip: {
+    backgroundColor: '#f0f0f0',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    marginRight: 8,
+  },
+  activeFilter: {
+    backgroundColor: '#3fa58e',
+  },
+  filterText: {
+    fontSize: 12,
+    color: '#666',
+  },
+  activeFilterText: {
+    color: '#fff',
+  },
+  weekView: {
+    padding: 20,
+  },
+  weekTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#333',
+    marginBottom: 20,
+  },
+  weekDay: {
+    backgroundColor: '#fff',
+    padding: 16,
+    borderRadius: 12,
+    marginBottom: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  selectedWeekDay: {
+    borderWidth: 2,
+    borderColor: '#3fa58e',
+  },
+  weekDayName: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#333',
+  },
+  weekDayDate: {
+    fontSize: 14,
+    color: '#666',
+    marginTop: 2,
+  },
+  weekDayProgress: {
+    marginTop: 8,
+  },
+  weekDayCount: {
+    fontSize: 12,
+    color: '#3fa58e',
+    fontWeight: '600',
+  },
+  progressBar: {
+    height: 4,
+    backgroundColor: '#f0f0f0',
+    borderRadius: 2,
+    marginTop: 4,
+  },
+  progressFill: {
+    height: '100%',
+    backgroundColor: '#3fa58e',
+    borderRadius: 2,
+  },
+  listActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    paddingHorizontal: 20,
+    paddingBottom: 10,
+  },
+  exportButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#f0f9f7',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    gap: 4,
+  },
+  exportText: {
+    fontSize: 12,
+    color: '#3fa58e',
+    fontWeight: '600',
   },
 });
